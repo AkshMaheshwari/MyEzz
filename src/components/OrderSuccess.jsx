@@ -1,8 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { CheckCircle, Home, Printer, MapPin, Phone, Mail, User, ShoppingBag, Calendar } from "lucide-react";
-import { getOrderStatus } from "../api/riderService";
+import { CheckCircle, Home, Printer, MapPin, Phone, Mail, User, ShoppingBag, Calendar, Clock } from "lucide-react";
+import { 
+    trackOrder, 
+    formatOrderStatus, 
+    initializeRealtimeConnection, 
+    subscribeToOrder,
+    disconnectRealtime 
+} from "../api/unifiedOrderService";
 
 const OrderSuccess = () => {
   const { state } = useLocation();
@@ -11,31 +17,74 @@ const OrderSuccess = () => {
   const orderId = state?.orderId;
   const customerInfo = state?.customerInfo;
   const cartItems = state?.cart;
+  const orderDetails = state?.orderDetails;
 
-  const [order, setOrder] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [order, setOrder] = useState(orderDetails || null);
+  const [tracking, setTracking] = useState(null);
+  const [loading, setLoading] = useState(!orderDetails);
   const [error, setError] = useState(null);
+  const [statusUpdate, setStatusUpdate] = useState(null);
 
   useEffect(() => {
-    const fetchOrder = async () => {
+    const fetchOrderTracking = async () => {
       if (!orderId) {
         setLoading(false);
         return;
       }
       try {
-        const data = await getOrderStatus(orderId);
-        setOrder(data);
+        const trackingData = await trackOrder(orderId);
+        setOrder(trackingData.data?.order || orderDetails);
+        setTracking(trackingData.data);
       } catch (err) {
-        setError("Unable to load your order from the server.");
-        // eslint-disable-next-line no-console
+        if (orderDetails) {
+          setOrder(orderDetails);
+        } else {
+          setError("Unable to load your order from the server.");
+        }
         console.error("Error fetching order:", err);
       } finally {
         setLoading(false);
       }
     };
 
-    fetchOrder();
-  }, [orderId]);
+    fetchOrderTracking();
+
+    if (orderId && customerInfo?.userId) {
+      initializeRealtimeConnection(customerInfo.userId, {
+        onOrderAccepted: (data) => {
+          if (data.orderId === orderId) {
+            setStatusUpdate({
+              type: 'success',
+              message: data.message || 'Restaurant accepted your order!'
+            });
+            fetchOrderTracking();
+          }
+        },
+        onOrderRejected: (data) => {
+          if (data.orderId === orderId) {
+            setStatusUpdate({
+              type: 'error',
+              message: data.message || 'Restaurant could not accept your order.'
+            });
+            fetchOrderTracking();
+          }
+        },
+        onStatusUpdate: (data) => {
+          if (data.orderId === orderId) {
+            setStatusUpdate({
+              type: 'info',
+              message: data.message || `Order status: ${data.status}`
+            });
+            fetchOrderTracking();
+          }
+        }
+      });
+
+      subscribeToOrder(orderId);
+    }
+
+    return () => disconnectRealtime();
+  }, [orderId, customerInfo?.userId, orderDetails]);
 
   if (!orderId || !customerInfo || !cartItems) {
     return (
@@ -60,13 +109,14 @@ const OrderSuccess = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
         <div className="text-center space-y-4">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-orange-500 mx-auto"></div>
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">Loading your order...</h2>
         </div>
       </div>
     );
   }
 
-  if (error || !order) {
+  if (error && !order) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900 p-4">
         <div className="text-center space-y-4">
@@ -116,13 +166,16 @@ const OrderSuccess = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <div className="bg-orange-50 dark:bg-orange-900/10 p-4 rounded-2xl border border-orange-100 dark:border-orange-800/30">
               <p className="text-xs text-orange-600 dark:text-orange-400 font-semibold uppercase tracking-wider mb-1">Order ID</p>
-              <p className="text-lg font-bold text-gray-900 dark:text-white">#{order._id}</p>
+              <p className="text-lg font-bold text-gray-900 dark:text-white">#{order.orderId || order._id}</p>
             </div>
             <div className="bg-blue-50 dark:bg-blue-900/10 p-4 rounded-2xl border border-blue-100 dark:border-blue-800/30">
               <p className="text-xs text-blue-600 dark:text-blue-400 font-semibold uppercase tracking-wider mb-1">Date & Time</p>
               <div className="flex items-center text-gray-900 dark:text-white font-medium">
                 <Calendar className="w-4 h-4 mr-2 opacity-70" />
-                {new Date(order.createdAt).toLocaleDateString()} • {new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {order.createdAt 
+                  ? `${new Date(order.createdAt).toLocaleDateString()} • ${new Date(order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : `${new Date().toLocaleDateString()} • ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                }
               </div>
             </div>
           </div>
@@ -192,7 +245,7 @@ const OrderSuccess = () => {
               <div className="bg-gray-50 dark:bg-gray-700/50 px-4 py-4 border-t border-gray-200 dark:border-gray-700">
                 <div className="flex justify-between items-center">
                   <span className="font-bold text-gray-900 dark:text-white">Total Amount</span>
-                  <span className="text-xl font-bold text-orange-600 dark:text-orange-400">₹{order.price}</span>
+                  <span className="text-xl font-bold text-orange-600 dark:text-orange-400">₹{order.total || order.price}</span>
                 </div>
                 <div className="flex justify-between items-center mt-2 text-sm">
                   <span className="text-gray-500 dark:text-gray-400">Payment Method</span>
@@ -204,6 +257,17 @@ const OrderSuccess = () => {
             </div>
           </div>
 
+          {/* Status Update Toast */}
+          {statusUpdate && (
+            <div className={`p-4 rounded-xl ${
+              statusUpdate.type === 'success' ? 'bg-green-100 dark:bg-green-900/20 text-green-800 dark:text-green-400' :
+              statusUpdate.type === 'error' ? 'bg-red-100 dark:bg-red-900/20 text-red-800 dark:text-red-400' :
+              'bg-blue-100 dark:bg-blue-900/20 text-blue-800 dark:text-blue-400'
+            }`}>
+              <p className="font-medium">{statusUpdate.message}</p>
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex flex-col sm:flex-row gap-4 pt-4">
             <button
@@ -214,7 +278,7 @@ const OrderSuccess = () => {
               Home
             </button>
             <button
-              onClick={() => navigate(`/track/${order._id}`)}
+              onClick={() => navigate(`/track/${order.orderId || order._id}`)}
               className="flex-[2] flex items-center justify-center px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-xl transition-all duration-300 shadow-lg shadow-orange-200/50 dark:shadow-orange-900/30 transform hover:-translate-y-1"
             >
               <MapPin className="w-5 h-5 mr-2" />

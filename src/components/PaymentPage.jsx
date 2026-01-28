@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { CreditCard, Wallet, CheckCircle2, ShieldCheck, Lock, Check } from "lucide-react"; // icons
-import { submitOrderToRider } from "../api/riderService";
+// Import unified order service (replaces direct rider integration)
+import { placeOrder as placeUnifiedOrder } from "../api/unifiedOrderService";
 
 const FoodBackground = () => {
   const [particles, setParticles] = useState([]);
@@ -106,54 +107,55 @@ function PaymentPage() {
   const platformFee = 8;
   const total = subtotal + deliveryFee + platformFee;
 
-  const placeOrder = async () => {
-    setLoading(true); // ✅ Set loading to true
+  const placeOrder = async (paymentStatus = 'pending') => {
+    setLoading(true);
     try {
-      const orderItems = cart.map((item) => ({
-        name: item.name,
-        qty: item.quantity,
-        price: item.price,
-      }));
-
-      // Map user-app data into backend Order schema.
-      const backendOrderPayload = {
-        customerName: customerInfo.fullName || customerInfo.name,
-        customerPhone: customerInfo.phoneNumber || customerInfo.phone,
-        pickupAddress:
-          cart[0]?.vendorAddress ||
-          cart[0]?.restaurantName ||
-          cart[0]?.vendor ||
-          "Restaurant Pickup",
-        dropAddress: customerInfo.fullAddress || customerInfo.address,
-        items: orderItems,
-        price: total,
-        paymentMethod: method === "cod" ? "cash_on_delivery" : "online",
-        dropLocation: {
-          type: "Point",
-          coordinates: [
-            customerInfo?.longitude ?? 0,
-            customerInfo?.latitude ?? 0,
-          ],
-        },
+      const mappedCustomerInfo = {
+        fullName: customerInfo.name || customerInfo.fullName,
+        phoneNumber: customerInfo.phone || customerInfo.phoneNumber,
+        emailId: customerInfo.email || customerInfo.emailId,
+        fullAddress: customerInfo.address || customerInfo.fullAddress,
+        userId: customerInfo.userId || null,
+        latitude: customerInfo.latitude || 0,
+        longitude: customerInfo.longitude || 0,
+        notes: customerInfo.notes || ''
       };
 
-      const createdOrder = await submitOrderToRider(backendOrderPayload);
+      const orderPayload = {
+        customerInfo: mappedCustomerInfo,
+        cart,
+        subtotal,
+        deliveryFee,
+        platformFee,
+        total,
+        paymentMethod: method,
+        paymentStatus: paymentStatus
+      };
 
-      setShowSuccess(true);
-      setTimeout(() => {
-        navigate("/success", {
-          state: {
-            orderId: createdOrder._id,
-            customerInfo,
-            cart,
-          },
-        });
-      }, 2000);
+      const result = await placeUnifiedOrder(orderPayload);
+
+      if (result.success) {
+        const orderData = Array.isArray(result.data) ? result.data[0] : result.data;
+        
+        setShowSuccess(true);
+        setTimeout(() => {
+          navigate("/success", {
+            state: {
+              orderId: orderData.orderId || orderData.order_id,
+              customerInfo: mappedCustomerInfo,
+              cart,
+              orderDetails: orderData
+            },
+          });
+        }, 2000);
+      } else {
+        throw new Error(result.error || 'Failed to place order');
+      }
     } catch (error) {
       console.error("Error placing order:", error);
-      // You could also show a user-facing error message here
+      alert(error.message || "Failed to place order. Please try again.");
     } finally {
-      if (!showSuccess) setLoading(false); // Only stop loading if not showing success
+      if (!showSuccess) setLoading(false);
     }
   };
 
@@ -161,7 +163,7 @@ function PaymentPage() {
     if (!method) return alert("Select payment method");
 
     if (method === "cod") {
-      await placeOrder();
+      await placeOrder('pending');
       return;
     }
 
@@ -172,13 +174,14 @@ function PaymentPage() {
       name: "MyEzz",
       description: "Order Payment",
       handler: async (response) => {
-        setLoading(true); // ✅ Set loading to true for Razorpay handler
+        setLoading(true);
         try {
-          await placeOrder();
+          // Payment successful - place order with paid status
+          await placeOrder('paid');
         } catch (error) {
           console.error("Payment handler error:", error);
         } finally {
-          setLoading(false); // ✅ Set loading back to false
+          setLoading(false);
         }
       },
       prefill: {
